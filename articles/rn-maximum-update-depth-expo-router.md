@@ -1,5 +1,5 @@
 ---
-title: "React NativeでMaximum update depth exceeded — Expo RouterとTab Navigatorの混在が原因だった"
+title: "Maximum update depth exceeded — Expo RouterとTab Navigatorの混在が原因だった"
 emoji: "🔄"
 type: "tech"
 topics: ["reactnative", "expo", "exporouter", "debug"]
