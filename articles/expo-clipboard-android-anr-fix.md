@@ -1,5 +1,5 @@
 ---
-title: "expo-clipboard の ClipboardEventEmitter が引き起こす Android ANR を patch-package で修正する"
+title: "expo-clipboard ClipboardEventEmitter の Android ANR を patch-package で修正"
 emoji: "📋"
 type: "tech"
 topics: ["reactnative", "expo", "android", "patchpackage", "crashlytics"]

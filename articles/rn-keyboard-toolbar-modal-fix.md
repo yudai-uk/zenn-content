@@ -1,8 +1,8 @@
 ---
-title: "React Nativeのモーダル画面でKeyboardAvoidingViewが予測変換バーを無視する問題の解決法"
+title: "React NativeのKeyboardAvoidingViewをuseAnimatedKeyboardで置き換える"
 emoji: "⌨️"
 type: "tech"
-topics: ["reactnative", "expo", "ios", "reanimated"]
+topics: ["reactnative", "expo", "android", "reanimated"]
 published: true
 ---
 
@@ -124,8 +124,7 @@ KAVは以下のように動作します：
 ```
 SafeAreaView (edges=['bottom'])
   View (header)
-  [iOS]  ReanimatedAnimated.View (paddingBottom = keyboard.height - insets.bottom)
-  [Android] KeyboardAvoidingView (behavior="height")
+  ReanimatedAnimated.View (paddingBottom = keyboard.height - insets.bottom)
     ScrollView (flex:1)
       TextInput (title)
       TextInput (content)
@@ -133,6 +132,10 @@ SafeAreaView (edges=['bottom'])
       EditorToolbar
       KeyboardToolbar (キーボード非表示時は非表示)
 ```
+
+:::message alert
+当初は iOS のみ `useAnimatedKeyboard` を使い、Android は `KeyboardAvoidingView` を残す方針でした。しかし後述の通り、**`useAnimatedKeyboard` を呼ぶだけで Android の `adjustResize` が無効化される**問題が判明したため、最終的には iOS/Android 統一で `useAnimatedKeyboard` を使う構成にしています。
+:::
 
 #### コード変更
 
@@ -170,8 +173,7 @@ npx expo install --check react-native-reanimated
 const insets = useSafeAreaInsets();
 
 const keyboard = useAnimatedKeyboard();
-const iosKeyboardStyle = useAnimatedStyle(() => {
-  if (Platform.OS !== 'ios') return {};
+const keyboardStyle = useAnimatedStyle(() => {
   return {
     paddingBottom: Math.max(0, keyboard.height.value - insets.bottom),
   };
@@ -186,23 +188,15 @@ insets.bottom = 34px（SafeAreaViewが適用済み）
 paddingBottom = 291 - 34 = 257px ← 正確な値
 ```
 
-**3. Platform条件分岐**
+**3. KAV を ReanimatedAnimated.View に置き換え**
 
 ```tsx
-{Platform.OS === 'ios' ? (
-  <ReanimatedAnimated.View style={[styles.container, iosKeyboardStyle]}>
-    {renderEditorContent()}
-  </ReanimatedAnimated.View>
-) : (
-  <KeyboardAvoidingView
-    behavior="height"
-    style={styles.container}
-    keyboardVerticalOffset={0}
-  >
-    {renderEditorContent()}
-  </KeyboardAvoidingView>
-)}
+<ReanimatedAnimated.View style={[styles.container, keyboardStyle]}>
+  {renderEditorContent()}
+</ReanimatedAnimated.View>
 ```
+
+`KeyboardAvoidingView` の import は不要になるため削除できます。
 
 **4. renderEditorContent ヘルパー**
 
@@ -226,11 +220,80 @@ const renderEditorContent = () => (
 );
 ```
 
-### なぜ Android は KAV のままなのか
+### 落とし穴: useAnimatedKeyboard は Android の adjustResize を無効化する
 
-Androidでは `KeyboardAvoidingView` がモーダル画面でも正常に動作します。これは Android のキーボード表示メカニズムが iOS と異なり、`windowSoftInputMode` によるレイアウト調整が View hierarchy の座標系に依存しないためです。
+当初は「iOS のみ `useAnimatedKeyboard` に切り替え、Android は `KeyboardAvoidingView` のまま」という方針でした。しかし、**Android でツールバーが完全に消える**という新たな問題が発生しました。
 
-変更を最小限にとどめ、Androidの既存動作を壊さないように、iOS のみ `useAnimatedKeyboard` に切り替えています。
+#### 症状
+
+Android 実機でキーボードを表示すると、EditorToolbar も KeyboardToolbar も**一切表示されない**。キーボードとテキスト入力の間に黒い空白が広がるだけ。
+
+```
+┌──────────────────┐
+│   テキスト入力     │
+│                  │
+│                  │
+│  （黒い空白）      │ ← ツールバーが消えた！
+│                  │
+├──────────────────┤
+│   キーボード       │
+└──────────────────┘
+```
+
+#### 根本原因: useAnimatedKeyboard の副作用
+
+`useAnimatedKeyboard()` を React のコンポーネント内で呼ぶと、**フックが呼ばれた時点で** Android 側に副作用が発生します。
+
+```tsx
+// ❌ フックは両プラットフォームで無条件に実行される
+const keyboard = useAnimatedKeyboard();
+const iosKeyboardStyle = useAnimatedStyle(() => {
+  if (Platform.OS !== 'ios') return {}; // ← スタイルは iOS のみ…
+  return { paddingBottom: Math.max(0, keyboard.height.value - insets.bottom) };
+});
+```
+
+`iosKeyboardStyle` のアニメーション値を iOS でしか使っていなくても、**`useAnimatedKeyboard()` 自体が Android で以下の処理を実行します**：
+
+```java
+// react-native-reanimated の内部実装（Android）
+WindowCompat.setDecorFitsSystemWindows(window, false)
+```
+
+この1行が `AndroidManifest.xml` で設定した `windowSoftInputMode="adjustResize"` の動作を**事実上無効化**します。
+
+#### 二重調整から "ゼロ調整" へ
+
+| 状態 | adjustResize | useAnimatedKeyboard のスタイル適用 | 結果 |
+|------|-------------|----------------------------------|------|
+| 修正前（KAVあり） | ✅ 有効 | — | KAV + adjustResize で二重調整 |
+| iOS のみ置き換え後 | ❌ **無効化** | iOS のみ適用 | Android は何も調整されない |
+| 最終版（統一） | ❌ 無効化 | ✅ 両OS適用 | 正常動作 |
+
+`adjustResize` が無効化された Android で `KeyboardAvoidingView` を使っても、OS がウィンドウをリサイズしないため KAV の基準計算も狂い、ツールバーがキーボードの裏に隠れます。
+
+#### 解決策: 両プラットフォームで統一
+
+`useAnimatedKeyboard()` を呼ぶ以上、Android でも `adjustResize` は無効化されます。であれば、**両プラットフォームで同じアニメーションスタイルを適用する**のが正しい設計です。
+
+```tsx
+// ✅ 両プラットフォームで統一して使用
+const keyboard = useAnimatedKeyboard();
+const keyboardStyle = useAnimatedStyle(() => {
+  return {
+    paddingBottom: Math.max(0, keyboard.height.value - insets.bottom),
+  };
+});
+
+// Platform 分岐不要
+<ReanimatedAnimated.View style={[styles.container, keyboardStyle]}>
+  {renderEditorContent()}
+</ReanimatedAnimated.View>
+```
+
+:::message
+`useAnimatedKeyboard` を使う場合、`KeyboardAvoidingView` は完全に不要になります。import からも削除しましょう。
+:::
 
 ## SwiftUI版との比較
 
@@ -253,12 +316,13 @@ React Native にも `InputAccessoryView` コンポーネントがありますが
 2. **`InputAccessoryView` はモーダルで使えない** — React Native の既知の問題（[#21363](https://github.com/facebook/react-native/issues/21363)）
 3. **`useAnimatedKeyboard` は View hierarchy に非依存** — `NSNotificationCenter` から直接キーボード座標を取得するため、モーダルでも正確
 4. **予測変換バーの高さは端末依存** — 固定値のオフセットでは対応不可。動的に追従する仕組みが必要
+5. **`useAnimatedKeyboard()` は呼ぶだけで Android の `adjustResize` を無効化する** — `setDecorFitsSystemWindows(false)` が内部で実行されるため、iOS のみの Platform 分岐では Android が壊れる。使うなら両プラットフォームで統一すること
 
-### モーダル画面でのキーボード対応チェックリスト
+### キーボード対応チェックリスト
 
 - [ ] `KeyboardAvoidingView` がモーダル内で正しく動作しているか確認
 - [ ] 予測変換バーの ON/OFF 両方でツールバーが見えるか確認
 - [ ] 問題がある場合は `useAnimatedKeyboard`（reanimated v3）の使用を検討
 - [ ] `SafeAreaView` のインセットと `keyboard.height` の二重計算を避けているか
-- [ ] Android では KAV が正常動作するか別途確認（Platform分岐を推奨）
+- [ ] `useAnimatedKeyboard` 使用時は **Platform 分岐せず両OS統一**で適用しているか
 - [ ] iOS / Android 両方の実機で表示確認を行ったか
