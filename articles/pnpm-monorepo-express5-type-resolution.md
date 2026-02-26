@@ -1,5 +1,5 @@
 ---
-title: "pnpm モノレポ移行で Express 5 の型エラーが大量発生 ― @types/express-serve-static-core のバージョン解決差異"
+title: "pnpm モノレポ移行で Express 5 の型エラー ― @types/express-serve-static-core 解決差異"
 emoji: "📦"
 type: "tech"
 topics: ["pnpm", "monorepo", "express", "typescript", "npm"]
